@@ -644,18 +644,17 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-tertiary, #94a3b8);
         white-space: nowrap;
       }
-      /* 四个档位按钮始终单行：不换行 + 等宽平分整行宽度 */
+      /* 档位按钮始终单行：不换行，但按内容宽度排列，不拉伸占满整行 */
       .dsh-sm-effort-pills {
         display: flex;
         gap: 4px;
         flex-wrap: nowrap;
-        width: 100%;
         min-width: 0;
       }
       .dsh-sm-effort-pill {
-        flex: 1 1 0;
+        flex: 0 0 auto;
         min-width: 0;
-        padding: 2px 4px;
+        padding: 2px 8px;
         border-radius: 4px;
         font-size: 11px;
         line-height: 16px;
@@ -835,8 +834,8 @@ window.__ModuleLoader__.load({
 
     function injectStyles() {
       if (typeof document === 'undefined') return;
-      const STYLE_TAG_ID = 'dsh-smart-models-styles-v20';
-      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17', 'dsh-smart-models-styles-v18', 'dsh-smart-models-styles-v19'];
+      const STYLE_TAG_ID = 'dsh-smart-models-styles-v21';
+      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17', 'dsh-smart-models-styles-v18', 'dsh-smart-models-styles-v19', 'dsh-smart-models-styles-v20'];
       for (const oid of oldIds) {
         const el = document.getElementById(oid);
         if (el) el.remove();
