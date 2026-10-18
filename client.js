@@ -746,6 +746,60 @@ window.__ModuleLoader__.load({
         opacity: 0.55;
         font-weight: 500;
       }
+
+      /* ── 模型家族分组 ────────────────────────────────────────────── */
+      .dsh-sm-pinned-section {
+        padding-bottom: 4px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.08));
+      }
+      .dsh-sm-family-head {
+        height: 32px;
+        min-height: 32px;
+        max-height: 32px;
+        padding: 0 8px 0 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+        box-sizing: border-box;
+        border-radius: 4px;
+        transition: background 0.1s ease;
+      }
+      .dsh-sm-family-head:hover {
+        background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.06));
+      }
+      .dsh-sm-family-arrow {
+        font-size: 10px;
+        opacity: 0.45;
+        flex-shrink: 0;
+        width: 10px;
+        text-align: center;
+        transition: opacity 0.12s;
+      }
+      .dsh-sm-family-head:hover .dsh-sm-family-arrow,
+      .dsh-sm-family-head.is-open .dsh-sm-family-arrow {
+        opacity: 0.85;
+      }
+      .dsh-sm-family-label {
+        font-size: 12px;
+        font-weight: 600;
+        opacity: 0.8;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dsh-sm-family-count {
+        margin-left: auto;
+        font-size: 10px;
+        font-weight: 600;
+        opacity: 0.45;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 1px 6px;
+        border-radius: 8px;
+        flex-shrink: 0;
+      }
       /* 配额健康度配色：低余量醒目提示 */
       .dsh-cchud-amount.is-low {
         color: #f87171;
@@ -757,8 +811,8 @@ window.__ModuleLoader__.load({
 
     function injectStyles() {
       if (typeof document === 'undefined') return;
-      const STYLE_TAG_ID = 'dsh-smart-models-styles-v17';
-      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16'];
+      const STYLE_TAG_ID = 'dsh-smart-models-styles-v18';
+      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17'];
       for (const oid of oldIds) {
         const el = document.getElementById(oid);
         if (el) el.remove();
@@ -1039,11 +1093,65 @@ window.__ModuleLoader__.load({
         .replace(/\s*[\(\[]\s*(?:x\d+(?:\.\d+)?|\d+(?:\.\d+)?x|免费)\s*[\)\]]\s*$/gi, '')
         .trim();
 
+      // ── 命名变体归一（gpt-oss-120b / openai.gpt-oss-120b / openai/gpt-oss-120b / gpt-oss:120b）
+      // 1) 剥离任意 vendor 前缀（点号或斜杠分隔，如 openai. / moonshotai/ / meta-llama/）
+      name = name.replace(/^[a-z0-9][a-z0-9_-]*\s*[./]\s*(?=[a-z])/i, '').trim();
+      // 2) 冒号/下划线统一为连字符（gpt-oss:120b → gpt-oss-120b）
+      name = name.replace(/[:：]/g, '-').replace(/_/g, '-');
+
       if (/^deepseek[-_]v?4\.1[-_]flash/i.test(name)) return 'DeepSeek-V4.1-Flash';
       if (/^deepseek[-_]v?4[-_]pro/i.test(name)) return 'DeepSeek-V4-Pro';
       if (/^deepseek[-_]v?3/i.test(name)) return 'DeepSeek-V3';
       if (/^deepseek[-_]r?1/i.test(name)) return 'DeepSeek-R1';
+
+      // 3) 已知同源别名归一（精确匹配，避免误伤其它模型）
+      const lower = name.toLowerCase();
+      if (/^gpt-oss-?120b(-250805)?$/.test(lower)) return 'GPT-OSS 120B';
+      if (/^gpt-oss-?20b$/.test(lower)) return 'GPT-OSS 20B';
+
       return name;
+    }
+
+    // ── 模型家族识别（用于列表折叠分组）────────────────────────────────────────
+    // 顺序敏感：更具体的前缀必须排在前面（如 mimo 不能先被别的规则吃掉）
+    const MODEL_FAMILIES = [
+      { id: 'gpt', label: 'GPT / OpenAI', test: /^(gpt|o1|o3|o4|chatgpt)/i },
+      { id: 'claude', label: 'Claude', test: /^claude/i },
+      { id: 'gemini', label: 'Gemini', test: /^gemini/i },
+      { id: 'deepseek', label: 'DeepSeek', test: /^deepseek/i },
+      { id: 'glm', label: 'GLM / 智谱', test: /^(glm|zhipu)/i },
+      { id: 'kimi', label: 'Kimi / Moonshot', test: /^(kimi|moonshot)/i },
+      { id: 'qwen', label: 'Qwen / 通义', test: /^(qwen|tongyi)/i },
+      { id: 'grok', label: 'Grok', test: /^grok/i },
+      { id: 'mimo', label: 'MiMo', test: /^mimo/i },
+      { id: 'llama', label: 'Llama / Meta', test: /^(llama|meta-)/i },
+      { id: 'minimax', label: 'MiniMax', test: /^minimax/i },
+      { id: 'nemotron', label: 'Nemotron / NVIDIA', test: /^(nemotron|nvidia)/i },
+      { id: 'mistral', label: 'Mistral / Codestral', test: /^(mistral|codestral|devstral|magistral)/i },
+      { id: 'doubao', label: 'Doubao / Seed / 豆包', test: /^(doubao|seed)/i },
+      { id: 'cohere', label: 'Command / Cohere', test: /^command/i },
+      { id: 'gemma', label: 'Gemma', test: /^gemma/i },
+      { id: 'hunyuan', label: 'Hunyuan / 混元', test: /^(hunyuan|hy\d)/i },
+      { id: 'qwq', label: 'QwQ', test: /^qwq/i },
+      { id: 'muse', label: 'Muse', test: /^muse/i },
+      { id: 'sonar', label: 'Sonar / Perplexity', test: /^sonar/i },
+      { id: 'ling', label: 'Ling', test: /^ling/i },
+      { id: 'longcat', label: 'LongCat', test: /^longcat/i },
+      { id: 'hermes', label: 'Hermes', test: /^hermes/i },
+      { id: 'morph', label: 'Morph', test: /^morph/i },
+      { id: 'kilo', label: 'Kilo Auto', test: /^kilo/i }
+    ];
+    const OTHER_FAMILY = { id: 'other', label: '其他模型', test: null };
+
+    // 模型数少于该值的家族会并入「其他」，避免折叠后仍有 20+ 个一行标题堆满面板
+    const FAMILY_MERGE_THRESHOLD = 3;
+
+    function detectFamily(canonName) {
+      const n = String(canonName || '');
+      for (const f of MODEL_FAMILIES) {
+        if (f.test.test(n)) return f;
+      }
+      return OTHER_FAMILY;
     }
 
     // ── 默认模型、渠道与偏好存储（localStorage + 本地磁盘双重持久化）─────────────────
@@ -1588,11 +1696,128 @@ window.__ModuleLoader__.load({
         });
       }, [aggregatedModels, query, favoritedModels, activeInfo?.canonName]);
 
+      // 家族分组：搜索时返回 null（走平铺），否则星标/当前模型置顶 + 家族折叠
+      const groupedModels = useMemo(() => {
+        if (query.trim()) return null;
+
+        const activeCanonKey = activeInfo?.canonName ? activeInfo.canonName.toLowerCase() : null;
+        const pinned = [];
+        const byFamily = new Map();
+
+        for (const item of filteredList) {
+          const canonKey = item.canonName.toLowerCase();
+          const isFav = favoritedModels.has(canonKey);
+          const isActive = Boolean(activeCanonKey && canonKey === activeCanonKey);
+
+          if (isFav || isActive) {
+            pinned.push({ item, isFav, isActive });
+            continue;
+          }
+          const fam = detectFamily(item.canonName);
+          if (!byFamily.has(fam.id)) byFamily.set(fam.id, { fam, items: [] });
+          byFamily.get(fam.id).items.push(item);
+        }
+
+        // 小家族并入「其他」：折叠态下标题行不至于堆到 20+
+        const mergedOther = { fam: OTHER_FAMILY, items: [] };
+        for (const [famId, group] of Array.from(byFamily.entries())) {
+          if (famId === 'other') continue;
+          if (group.items.length < FAMILY_MERGE_THRESHOLD) {
+            mergedOther.items.push(...group.items);
+            byFamily.delete(famId);
+          }
+        }
+        if (mergedOther.items.length > 0) {
+          const existingOther = byFamily.get('other');
+          if (existingOther) existingOther.items.push(...mergedOther.items);
+          else byFamily.set('other', mergedOther);
+        }
+
+        const families = Array.from(byFamily.values()).sort((a, b) => {
+          // 「其他」永远排最后；其余按模型数降序
+          if (a.fam.id === 'other') return 1;
+          if (b.fam.id === 'other') return -1;
+          if (b.items.length !== a.items.length) return b.items.length - a.items.length;
+          return a.fam.label.localeCompare(b.fam.label);
+        });
+
+        return { pinned, families };
+      }, [filteredList, query, favoritedModels, activeInfo?.canonName]);
+
+      // 家族展开状态：默认全部折叠
+      const [expandedFamilies, setExpandedFamilies] = useState(() => new Set());
+      const toggleFamily = useCallback((famId) => {
+        setExpandedFamilies(prev => {
+          const next = new Set(prev);
+          if (next.has(famId)) next.delete(famId);
+          else next.add(famId);
+          return next;
+        });
+      }, []);
+
       // 当前伴随卡片对应的模型对象
       const activeCompanionItem = useMemo(() => {
         if (!hoveredModel) return null;
         return aggregatedModels.find(m => m.canonName.toLowerCase() === hoveredModel.canonName.toLowerCase()) || hoveredModel;
       }, [hoveredModel, aggregatedModels]);
+
+      // 单个模型行渲染（平铺与分组两条路径共用，保证样式与交互一致）
+      const renderModelRow = useCallback((item) => {
+        const canonKey = item.canonName.toLowerCase();
+        const isSessionModel = activeInfo?.canonName && activeInfo.canonName.toLowerCase() === canonKey;
+        const isHovered = hoveredModel?.canonName && hoveredModel.canonName.toLowerCase() === canonKey;
+        const isFav = favoritedModels.has(canonKey);
+
+        // 若为当前会话激活模型，显示实际使用的渠道与倍率；否则显示首选默认渠道
+        const defProvider = getModelDefaultProvider(item, modelChannelDefaults);
+        const activeProvider = isSessionModel
+          ? (item.providers.find(p => isSameProvider(p.providerId, activeInfo.providerId) && p.modelId === activeInfo.modelId) || defProvider)
+          : null;
+        const displayProvider = isSessionModel ? activeProvider : defProvider;
+        const displayRate = displayProvider?.multiplier || getLowestRate(item.providers);
+        const displayShortChannel = displayProvider
+          ? formatTriggerProviderName(displayProvider.providerId, displayProvider.providerName)
+          : '';
+
+        return h('div', {
+          key: item.canonName,
+          className: `dsh-sm-master-item ${isSessionModel ? 'is-active-session' : ''} ${isHovered ? 'is-hovered' : ''} ${isFav ? 'is-favorited' : ''}`,
+          title: isSessionModel
+            ? `当前会话正在使用: ${displayProvider?.providerName || ''} [${displayProvider?.multiplier || ''}]\n鼠标悬停查看全部 ${item.providers.length} 个渠道`
+            : `默认渠道: ${displayProvider?.providerName || ''} [${displayProvider?.multiplier || ''}]\n鼠标悬停查看全部 ${item.providers.length} 个渠道`,
+          onMouseEnter: (e) => handleRowMouseEnter(item, e),
+          onMouseLeave: handleRowMouseLeave,
+          onClick: () => {
+            const targetProvider = isSessionModel ? (activeProvider || defProvider) : defProvider;
+            if (targetProvider) {
+              if (!isSessionModel || !isSameProvider(targetProvider.providerId, activeInfo?.providerId) || targetProvider.modelId !== activeInfo?.modelId) {
+                handleSelect(targetProvider.providerId, targetProvider.modelId, activeInfo?.effort || targetProvider.reasoning?.defaultEffort);
+              }
+            }
+          }
+        }, [
+          h('div', { className: 'dsh-sm-master-left' }, [
+            h('button', {
+              type: 'button',
+              className: `dsh-sm-master-fav-btn ${isFav ? 'is-fav' : ''}`,
+              title: isFav ? '取消收藏该模型' : '收藏该模型并置顶',
+              onClick: (e) => {
+                e.stopPropagation();
+                handleToggleFavorite(item.canonName);
+              }
+            }, isFav ? '★' : '☆'),
+            h('span', { className: 'dsh-sm-master-name', title: item.canonName }, item.canonName)
+          ]),
+          h('div', { className: 'dsh-sm-master-right' }, [
+            displayShortChannel && h('span', {
+              className: 'dsh-sm-master-channel-name',
+              title: `渠道: ${displayProvider?.providerName || displayShortChannel}`
+            }, displayShortChannel),
+            h('span', { className: `dsh-sm-rate-tag ${getRateClass(displayRate)}` }, formatCompactRate(displayRate)),
+            h('span', { className: 'dsh-sm-master-arrow' }, '›')
+          ])
+        ]);
+      }, [activeInfo, hoveredModel, favoritedModels, modelChannelDefaults, handleRowMouseEnter, handleRowMouseLeave, handleSelect, handleToggleFavorite]);
 
       // 动态测量计算伴随卡片的 Y 轴动态对齐与屏幕贴边避障 (方案 2 核心)
       const calculateFlyoutPos = useCallback((rowEl, popoverEl, providerCount) => {
@@ -1786,64 +2011,33 @@ window.__ModuleLoader__.load({
             h('div', { className: 'dsh-sm-master-col' }, [
               filteredList.length === 0
                 ? h('div', { className: 'dsh-sm-empty' }, '未找到匹配模型')
-                : filteredList.map(item => {
-                    const canonKey = item.canonName.toLowerCase();
-                    const isSessionModel = activeInfo?.canonName && activeInfo.canonName.toLowerCase() === canonKey;
-                    const isHovered = hoveredModel?.canonName && hoveredModel.canonName.toLowerCase() === canonKey;
-                    const isFav = favoritedModels.has(canonKey);
-
-                    // 核心逻辑：若为当前会话激活模型，显示当前会话实际使用的渠道与倍率；否则显示该模型的首选默认渠道与倍率
-                    const defProvider = getModelDefaultProvider(item, modelChannelDefaults);
-                    const activeProvider = isSessionModel
-                      ? (item.providers.find(p => isSameProvider(p.providerId, activeInfo.providerId) && p.modelId === activeInfo.modelId) || defProvider)
-                      : null;
-                    const displayProvider = isSessionModel ? activeProvider : defProvider;
-                    const displayRate = displayProvider?.multiplier || getLowestRate(item.providers);
-                    const displayShortChannel = displayProvider
-                      ? formatTriggerProviderName(displayProvider.providerId, displayProvider.providerName)
-                      : '';
-
-                    return h('div', {
-                      key: item.canonName,
-                      className: `dsh-sm-master-item ${isSessionModel ? 'is-active-session' : ''} ${isHovered ? 'is-hovered' : ''} ${isFav ? 'is-favorited' : ''}`,
-                      title: isSessionModel
-                        ? `当前会话正在使用: ${displayProvider?.providerName || ''} [${displayProvider?.multiplier || ''}]\n鼠标悬停查看全部 ${item.providers.length} 个渠道`
-                        : `默认渠道: ${displayProvider?.providerName || ''} [${displayProvider?.multiplier || ''}]\n鼠标悬停查看全部 ${item.providers.length} 个渠道`,
-                      onMouseEnter: (e) => handleRowMouseEnter(item, e),
-                      onMouseLeave: handleRowMouseLeave,
-                      onClick: () => {
-                        const targetProvider = isSessionModel ? (activeProvider || defProvider) : defProvider;
-                        if (targetProvider) {
-                          if (!isSessionModel || !isSameProvider(targetProvider.providerId, activeInfo?.providerId) || targetProvider.modelId !== activeInfo?.modelId) {
-                            handleSelect(targetProvider.providerId, targetProvider.modelId, activeInfo?.effort || targetProvider.reasoning?.defaultEffort);
-                          }
-                        }
-                      }
-                    }, [
-                      // 左侧：收藏星标开关（激活显示实心星，未激活hover显示空心星开关） + 模型名
-                      h('div', { className: 'dsh-sm-master-left' }, [
-                        h('button', {
-                          type: 'button',
-                          className: `dsh-sm-master-fav-btn ${isFav ? 'is-fav' : ''}`,
-                          title: isFav ? '取消收藏该模型' : '收藏该模型并置顶',
-                          onClick: (e) => {
-                            e.stopPropagation();
-                            handleToggleFavorite(item.canonName);
-                          }
-                        }, isFav ? '★' : '☆'),
-                        h('span', { className: 'dsh-sm-master-name', title: item.canonName }, item.canonName)
-                      ]),
-                      // 右侧：渠道极简缩写 (如 agy) + 倍率微标 + 箭头
-                      h('div', { className: 'dsh-sm-master-right' }, [
-                        displayShortChannel && h('span', {
-                          className: 'dsh-sm-master-channel-name',
-                          title: `渠道: ${displayProvider?.providerName || displayShortChannel}`
-                        }, displayShortChannel),
-                        h('span', { className: `dsh-sm-rate-tag ${getRateClass(displayRate)}` }, formatCompactRate(displayRate)),
-                        h('span', { className: 'dsh-sm-master-arrow' }, '›')
+                : (groupedModels === null
+                    // ① 搜索中：平铺渲染（原有行为）
+                    ? filteredList.map(renderModelRow)
+                    // ② 非搜索：星标/当前模型置顶 + 家族折叠
+                    : [
+                        groupedModels.pinned.length > 0 && h('div', {
+                          key: 'pinned',
+                          className: 'dsh-sm-pinned-section'
+                        }, groupedModels.pinned.map(p => renderModelRow(p.item))),
+                        ...groupedModels.families.map(group => {
+                          const famId = group.fam.id;
+                          const isOpen = expandedFamilies.has(famId);
+                          return h('div', { key: 'fam-' + famId, className: 'dsh-sm-family' }, [
+                            h('div', {
+                              key: 'head',
+                              className: `dsh-sm-family-head ${isOpen ? 'is-open' : ''}`,
+                              title: `${group.fam.label}：${group.items.length} 个模型（点击${isOpen ? '折叠' : '展开'}）`,
+                              onClick: () => toggleFamily(famId)
+                            }, [
+                              h('span', { key: 'arrow', className: 'dsh-sm-family-arrow' }, isOpen ? '▾' : '▸'),
+                              h('span', { key: 'label', className: 'dsh-sm-family-label' }, group.fam.label),
+                              h('span', { key: 'count', className: 'dsh-sm-family-count' }, String(group.items.length))
+                            ]),
+                            isOpen && h('div', { key: 'body' }, group.items.map(renderModelRow))
+                          ]);
+                        })
                       ])
-                    ]);
-                  })
             ])
           ]),
 
