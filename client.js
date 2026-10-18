@@ -1126,6 +1126,49 @@ window.__ModuleLoader__.load({
       return name;
     }
 
+    // ── 强归一键：判断「是否同一个模型」 ──────────────────────────────────────
+    // 同一模型在不同 provider 上的写法差异极大，实测 43 组被拆成多条：
+    //   GPT-5.6 Sol / GPT 5.6 Sol / Gpt 5.6 Sol        ← 分隔符 + 大小写
+    //   GLM-5.2 / GLM 5.2 / Glm 5.2                     ← 同上
+    //   DeepSeek V4 Pro / DeepSeek V4 Pro (ClinePass)   ← 括号来源后缀
+    //   Kimi K3 / Kimi K3 Free                          ← free 后缀
+    // 归一键 = 小写 + 去掉所有分隔符 + 剥离来源/免费后缀。
+    function normalizeKey(rawName) {
+      let s = String(rawName || '').toLowerCase();
+      // 剥离所有括号内容：末尾的 (ClinePass)/(LLM7)/(free)，以及中间的 (Exp)
+      let prev;
+      do {
+        prev = s;
+        s = s.replace(/[（(\[][^）)\]]*[）)\]]/g, ' ');
+      } while (s !== prev);
+      s = s.replace(/\s+/g, ' ').trim();
+      // 剥离来源/免费后缀
+      let before;
+      do {
+        before = s;
+        s = s.replace(/[\s\-_·]+(clinepass|llm7|vercel|vertex|bedrock|wafer|openrouter|freerouter|free)$/i, '').trim();
+      } while (s !== before);
+      // 去掉所有分隔符与标点，得到纯压缩键
+      return s.replace(/[\s\-_.:·/（）()\[\]]/g, '');
+    }
+
+    // 归一后的展示名：优先使用「无括号、无 free」的最干净写法
+    function pickDisplayName(candidates) {
+      const clean = candidates
+        .map(c => String(c || '').trim())
+        .filter(Boolean)
+        .map(c => ({
+          raw: c,
+          penalty: (/[（(\[]/.test(c) ? 2 : 0)
+            + (/\bfree\b/i.test(c) ? 2 : 0)
+            + (/^[A-Z\s]+$/.test(c) ? 1 : 0)
+            + (/^[a-z]/.test(c) ? 1 : 0)
+        }));
+      if (clean.length === 0) return '';
+      clean.sort((a, b) => a.penalty - b.penalty || a.raw.length - b.raw.length);
+      return clean[0].raw;
+    }
+
     // ── 模型家族识别（用于列表折叠分组）────────────────────────────────────────
     // 顺序敏感：更具体的前缀必须排在前面（如 mimo 不能先被别的规则吃掉）
     const MODEL_FAMILIES = [
@@ -1468,18 +1511,25 @@ window.__ModuleLoader__.load({
 
           for (const m of (group.models || [])) {
             const canonName = canonicalize(m.id, m.name);
-            const key = canonName.toLowerCase();
+            // 用强归一键做聚合 key：分隔符/大小写/括号来源后缀差异都视为同一模型
+            const key = normalizeKey(canonName);
             const multiplier = extractMultiplier(m, providerId);
             const rateCls = getRateClass(multiplier);
 
             if (!map.has(key)) {
               map.set(key, {
                 canonName,
+                nameCandidates: [canonName],
                 providers: []
               });
             }
 
-            const existing = map.get(key).providers;
+            const entry = map.get(key);
+            // 记录所有写法，稍后挑最干净的作为展示名
+            if (canonName && !entry.nameCandidates.includes(canonName)) {
+              entry.nameCandidates.push(canonName);
+            }
+            const existing = entry.providers;
             // 解决多账号重复 Badge 问题：按 providerId 去重并计数
             const duplicate = existing.find(p => p.providerId === providerId);
             if (!duplicate) {
@@ -1505,7 +1555,11 @@ window.__ModuleLoader__.load({
           }
         }
 
-        return Array.from(map.values());
+        // 合并完成后统一决定展示名，并丢弃内部字段
+        return Array.from(map.values()).map(entry => ({
+          canonName: pickDisplayName(entry.nameCandidates) || entry.canonName,
+          providers: entry.providers
+        }));
       }, [catalog, dynamicChannelInfo]);
 
       // 5. 计算当前选中的详情（包含倍率）
