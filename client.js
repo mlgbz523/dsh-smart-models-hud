@@ -1981,7 +1981,9 @@ window.__ModuleLoader__.load({
       if (id.startsWith('qoder')) return 'Qoder';
       if (id === 'siliconflow') return '硅基';
       const cleaned = (rawName || providerId || '').replace(/\(.*?\)/g, '').trim();
-      return cleaned.split(' ')[0] || cleaned.slice(0, 6);
+      const first = cleaned.split(/[\s_-]+/)[0] || cleaned;
+      // 未知渠道兜底：最多 8 个字符，避免撑破输入栏
+      return first.length > 8 ? first.slice(0, 8) : first;
     }
 
     // 余额结果缓存有效期：60 秒内切换模型复用上次结果，避免反复触发昂贵的串行查询
@@ -2059,6 +2061,9 @@ window.__ModuleLoader__.load({
     };
 
     // 该渠道是否计入积分体系（决定 HUD 是否显示）
+    // 渠道图标解析：白名单给专属图标，未知渠道返回通用图标
+    // ⚠️ 不返回 null —— 否则新接入的积分渠道会静默不显示。
+    // 真正决定「显不显示」的是能否查到有效余额，而不是这个白名单。
     function cchudProviderIcon(providerId) {
       const id = String(providerId || '').toLowerCase();
       if (id.includes('agy') || id.includes('antigravity')) return '✦';
@@ -2066,7 +2071,8 @@ window.__ModuleLoader__.load({
       for (const key of Object.keys(CCHUD_PROVIDER_ICONS)) {
         if (id.includes(key)) return CCHUD_PROVIDER_ICONS[key];
       }
-      return null;
+      // 未知渠道：用通用圆点作为图标，仍可显示余额
+      return '●';
     }
 
     // 单位中文化：服务端下发的是 "credit" / "token" / "%" 这类标识
@@ -2282,9 +2288,15 @@ window.__ModuleLoader__.load({
         } catch (err) {
           if (seq === requestSeq.current) {
             const message = String(err?.message ?? err);
+            // 上游明确说「不支持该渠道」：这不是错误，只是该渠道没有积分概念
+            const unsupported = /unsupported provider|not support/i.test(message);
             // 超时 / 中止：保留已有数值，仅标记过期，不把界面打成错误态
             const aborted = /abort|timeout|timed out/i.test(message);
-            if (aborted && creditsCacheRef.current.has(provider)) {
+            if (unsupported) {
+              // 标记为「非积分渠道」，渲染层据此静默隐藏
+              setError('');
+              setSnapshot({ total: 0, known: 0, failed: 0, unit: '', reason: message, accounts: 0, quotaMode: false, unsupported: true, windows: [] });
+            } else if (aborted && creditsCacheRef.current.has(provider)) {
               setError('');
             } else {
               setError(aborted ? '查询超时' : message);
@@ -2323,10 +2335,11 @@ window.__ModuleLoader__.load({
       }, [sessions, sessionId]);
 
       // 2. 渠道变化时刷新（连接服务可能尚未就绪，失败后延迟重试一次）
+      // 不再用白名单拦截：任何渠道都去查一次，查到余额就显示、查不到才隐藏。
       useEffect(() => {
         setDelta(null);
         if (settleTimerRef.current) { clearTimeout(settleTimerRef.current); settleTimerRef.current = null; }
-        if (!providerId || !cchudProviderIcon(providerId)) {
+        if (!providerId) {
           setSnapshot(null);
           setError('');
           return undefined;
@@ -2415,7 +2428,9 @@ window.__ModuleLoader__.load({
       const fullName = formatProviderName(providerId, providerId);
 
       const hasData = snapshot !== null && snapshot.known > 0;
-      // 无数据且非加载中、无结算提示时：只有查询失败才显示错误态，其余静默隐藏
+      // 该渠道本身没有积分概念（上游明确不支持）→ 静默隐藏，不打扰
+      if (snapshot?.unsupported) return null;
+      // 无数据、非加载中、无结算提示、且无错误 → 静默隐藏
       if (!hasData && !loading && !delta && !error) return null;
 
       const handleRefresh = () => {
