@@ -1762,6 +1762,65 @@ window.__ModuleLoader__.load({
       }, [hoveredModel, aggregatedModels]);
 
       // 单个模型行渲染（平铺与分组两条路径共用，保证样式与交互一致）
+      // 动态测量计算伴随卡片的 Y 轴动态对齐与屏幕贴边避障 (方案 2 核心)
+      const calculateFlyoutPos = useCallback((rowEl, popoverEl, providerCount) => {
+        if (!rowEl || !popoverEl) return { top: 0, flipLeft: false };
+        const popoverRect = popoverEl.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        const flyoutWidth = 245;
+        const estFlyoutHeight = Math.min(380, 52 + providerCount * 42);
+
+        // 1. 水平避障：右侧不够空间则翻转到左侧
+        const flipLeft = (popoverRect.right + flyoutWidth + 12) > window.innerWidth;
+
+        // 2. 垂直 Y 轴跟随与视口防溢出 (Viewport Clamping)
+        const minGlobalTop = 12;
+        const maxGlobalTop = window.innerHeight - estFlyoutHeight - 12;
+        const targetGlobalTop = Math.max(minGlobalTop, Math.min(rowRect.top - 4, maxGlobalTop));
+
+        // 转换为主卡片内的相对 top
+        const topRel = targetGlobalTop - popoverRect.top;
+        return { top: Math.round(topRel), flipLeft };
+      }, []);
+
+      const handleRowMouseEnter = useCallback((item, e) => {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current);
+          leaveTimerRef.current = null;
+        }
+        const pos = calculateFlyoutPos(e.currentTarget, popoverRef.current, item.providers.length);
+        setFlyoutPos(pos);
+        setHoveredModel(item);
+      }, [calculateFlyoutPos]);
+
+      const handleRowMouseLeave = useCallback(() => {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current);
+        }
+        leaveTimerRef.current = setTimeout(() => {
+          setHoveredModel(null);
+        }, 150);
+      }, []);
+
+      const handleFlyoutMouseEnter = useCallback(() => {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current);
+          leaveTimerRef.current = null;
+        }
+      }, []);
+
+      const handleFlyoutMouseLeave = useCallback(() => {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current);
+        }
+        leaveTimerRef.current = setTimeout(() => {
+          setHoveredModel(null);
+        }, 150);
+      }, []);
+
+      // 单个模型行渲染（平铺与分组两条路径共用）
+      // ⚠️ 必须声明在 handleRowMouseEnter / handleRowMouseLeave / handleSelect /
+      //    handleToggleFavorite 之后，否则 useCallback 的依赖数组会触发 TDZ 报错。
       const renderModelRow = useCallback((item) => {
         const canonKey = item.canonName.toLowerCase();
         const isSessionModel = activeInfo?.canonName && activeInfo.canonName.toLowerCase() === canonKey;
@@ -1818,62 +1877,6 @@ window.__ModuleLoader__.load({
           ])
         ]);
       }, [activeInfo, hoveredModel, favoritedModels, modelChannelDefaults, handleRowMouseEnter, handleRowMouseLeave, handleSelect, handleToggleFavorite]);
-
-      // 动态测量计算伴随卡片的 Y 轴动态对齐与屏幕贴边避障 (方案 2 核心)
-      const calculateFlyoutPos = useCallback((rowEl, popoverEl, providerCount) => {
-        if (!rowEl || !popoverEl) return { top: 0, flipLeft: false };
-        const popoverRect = popoverEl.getBoundingClientRect();
-        const rowRect = rowEl.getBoundingClientRect();
-        const flyoutWidth = 245;
-        const estFlyoutHeight = Math.min(380, 52 + providerCount * 42);
-
-        // 1. 水平避障：右侧不够空间则翻转到左侧
-        const flipLeft = (popoverRect.right + flyoutWidth + 12) > window.innerWidth;
-
-        // 2. 垂直 Y 轴跟随与视口防溢出 (Viewport Clamping)
-        const minGlobalTop = 12;
-        const maxGlobalTop = window.innerHeight - estFlyoutHeight - 12;
-        const targetGlobalTop = Math.max(minGlobalTop, Math.min(rowRect.top - 4, maxGlobalTop));
-
-        // 转换为主卡片内的相对 top
-        const topRel = targetGlobalTop - popoverRect.top;
-        return { top: Math.round(topRel), flipLeft };
-      }, []);
-
-      const handleRowMouseEnter = useCallback((item, e) => {
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current);
-          leaveTimerRef.current = null;
-        }
-        const pos = calculateFlyoutPos(e.currentTarget, popoverRef.current, item.providers.length);
-        setFlyoutPos(pos);
-        setHoveredModel(item);
-      }, [calculateFlyoutPos]);
-
-      const handleRowMouseLeave = useCallback(() => {
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current);
-        }
-        leaveTimerRef.current = setTimeout(() => {
-          setHoveredModel(null);
-        }, 150);
-      }, []);
-
-      const handleFlyoutMouseEnter = useCallback(() => {
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current);
-          leaveTimerRef.current = null;
-        }
-      }, []);
-
-      const handleFlyoutMouseLeave = useCallback(() => {
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current);
-        }
-        leaveTimerRef.current = setTimeout(() => {
-          setHoveredModel(null);
-        }, 150);
-      }, []);
 
       // 动态精确测量触发器位置，确保 popover fixed 挂载在 body 上时位置精准 (黄金单列 270px)
       const updatePopoverPosition = useCallback(() => {
