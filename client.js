@@ -2211,6 +2211,7 @@ window.__ModuleLoader__.load({
       const retryTimerRef = useRef(null);
       const creditsCacheRef = useRef(new Map());
       const requestSeq = useRef(0);
+      const currentModelIdRef = useRef('');
 
       const sessions = ctx?.sessions;
 
@@ -2325,6 +2326,8 @@ window.__ModuleLoader__.load({
             const snap = projection.getSnapshot?.();
             const sel = snap?.next ?? snap?.lastUsed ?? snap?.current ?? null;
             const next = sel?.provider ? String(sel.provider) : null;
+            // 同步记录模型 id，供用量台账归属
+            if (sel?.model) currentModelIdRef.current = String(sel.model);
             setProviderId(prev => (prev === next ? prev : next));
           } catch { /* 静默 */ }
         };
@@ -2403,6 +2406,16 @@ window.__ModuleLoader__.load({
                 setDelta(null);
                 settleTimerRef.current = null;
               }, 8000);
+
+              // 上报用量台账（供设置页统计）。只记「测得积分」的轮次，
+              // 免费/无积分渠道也记一条 credits=0，保证请求数统计完整。
+              void recordUsage({
+                provider: providerId,
+                model: currentModelIdRef.current || '',
+                credits: consumed > 0 ? consumed : 0,
+                creditsKnown: true,
+                requests: 1
+              });
             });
           }
           wasRunning = nowRunning;
@@ -2550,6 +2563,280 @@ window.__ModuleLoader__.load({
       return h(CreditsHudErrorBoundary, null, h(CreditsHud, props));
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // 设置页「用量统计」
+    //   · 数据来自宿主台账 /api/smart-models/usage（HUD 结算时上报）
+    //   · 按模型 / 渠道 / 日期三个维度汇总
+    //   · 「换算≈token」按实测均值反推，样本不足时显示 —
+    // ══════════════════════════════════════════════════════════════════════════
+
+    const USAGE_RANGES = [
+      { id: 'today', label: '今天', days: 1 },
+      { id: '7d', label: '近 7 天', days: 7 },
+      { id: '30d', label: '近 30 天', days: 30 },
+      { id: 'all', label: '全部', days: 0 }
+    ];
+
+    // 把事件按某个 key 聚合
+    function aggregateUsage(events, keyOf) {
+      const map = new Map();
+      for (const e of events) {
+        if (!e) continue;
+        const key = keyOf(e);
+        if (key === null || key === undefined || key === '') continue;
+        let row = map.get(key);
+        if (!row) {
+          row = { key, requests: 0, credits: 0, creditsKnown: 0, tokens: 0 };
+          map.set(key, row);
+        }
+        row.requests += Number.isFinite(e.requests) ? e.requests : 1;
+        if (e.creditsKnown === true && Number.isFinite(e.credits)) {
+          row.credits += e.credits;
+          row.creditsKnown += 1;
+        }
+        row.tokens += (Number.isFinite(e.inputTokens) ? e.inputTokens : 0)
+          + (Number.isFinite(e.outputTokens) ? e.outputTokens : 0);
+      }
+      return Array.from(map.values()).sort((a, b) => b.requests - a.requests);
+    }
+
+    // 换算：用范围内实测均值反推，而非固定常量
+    // 返回 null 表示无法换算（累计积分为 0 或数据不足）
+    function estimateTokens(credits, totalCredits, totalTokens) {
+      if (!Number.isFinite(credits) || credits <= 0) return null;
+      if (!Number.isFinite(totalCredits) || totalCredits <= 0) return null;
+      if (!Number.isFinite(totalTokens) || totalTokens <= 0) return null;
+      return credits * (totalTokens / totalCredits);
+    }
+
+    // 大数字紧凑显示：1234567 -> 1.23M
+    function compactNumber(value) {
+      if (!Number.isFinite(value)) return '—';
+      const abs = Math.abs(value);
+      if (abs >= 1e9) return (value / 1e9).toFixed(2) + 'B';
+      if (abs >= 1e6) return (value / 1e6).toFixed(2) + 'M';
+      if (abs >= 1e3) return (value / 1e3).toFixed(1) + 'K';
+      return String(Math.round(value));
+    }
+
+    function formatDayKey(ts) {
+      const d = new Date(ts);
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${mm}-${dd}`;
+    }
+
+    function formatSinceDate(ts) {
+      if (!Number.isFinite(ts)) return '—';
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    // 上报一轮消耗到宿主台账。失败静默（统计不该影响主流程）
+    async function recordUsage(row) {
+      try {
+        await fetch('/api/smart-models/usage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...row, at: Date.now() })
+        });
+      } catch (e) {
+        console.warn('[SmartModels] 用量台账上报失败（不影响使用）:', e);
+      }
+    }
+
+    // ── 设置页组件 ────────────────────────────────────────────────────────────
+    function UsageStatsPage(props) {
+      const [events, setEvents] = useState(null);
+      const [since, setSince] = useState(0);
+      const [range, setRange] = useState('7d');
+      const [error, setError] = useState('');
+      const [openTable, setOpenTable] = useState('model');
+
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          try {
+            const resp = await fetch('/api/smart-models/usage', { cache: 'no-store' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (cancelled) return;
+            if (data?.ok !== true) throw new Error(data?.error || '读取失败');
+            setEvents(Array.isArray(data.events) ? data.events : []);
+            setSince(Number.isFinite(data.since) ? data.since : 0);
+            setError('');
+          } catch (err) {
+            if (!cancelled) {
+              setEvents([]);
+              setError(String(err?.message ?? err));
+            }
+          }
+        })();
+        return () => { cancelled = true; };
+      }, []);
+
+      const filtered = useMemo(() => {
+        if (!Array.isArray(events)) return [];
+        const cfg = USAGE_RANGES.find(r => r.id === range);
+        if (!cfg || cfg.days === 0) return events;
+        if (range === 'today') {
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          return events.filter(e => e && e.at >= d.getTime());
+        }
+        const cutoff = Date.now() - cfg.days * 24 * 60 * 60 * 1000;
+        return events.filter(e => e && e.at >= cutoff);
+      }, [events, range]);
+
+      const totals = useMemo(() => {
+        let requests = 0, credits = 0, tokens = 0;
+        for (const e of filtered) {
+          requests += Number.isFinite(e.requests) ? e.requests : 1;
+          if (e.creditsKnown === true && Number.isFinite(e.credits)) credits += e.credits;
+          tokens += (Number.isFinite(e.inputTokens) ? e.inputTokens : 0)
+            + (Number.isFinite(e.outputTokens) ? e.outputTokens : 0);
+        }
+        return { requests, credits, tokens };
+      }, [filtered]);
+
+      const byModel = useMemo(() => aggregateUsage(filtered, e => e.model || ''), [filtered]);
+      const byProvider = useMemo(() => aggregateUsage(filtered, e => e.provider || ''), [filtered]);
+      const byDay = useMemo(() => {
+        const rows = aggregateUsage(filtered, e => (e.at ? formatDayKey(e.at) : ''));
+        return rows.sort((a, b) => (a.key < b.key ? 1 : -1));
+      }, [filtered]);
+
+      const tables = [
+        { id: 'model', title: '按模型', rows: byModel, labelOf: r => r.key || '（未知模型）' },
+        { id: 'provider', title: '按渠道', rows: byProvider, labelOf: r => formatProviderName(r.key, r.key) || r.key || '（未知渠道）' },
+        { id: 'day', title: '按日期', rows: byDay, labelOf: r => r.key || '（未知日期）' }
+      ];
+
+      const cell = { padding: '6px 8px', fontSize: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)' };
+      const headCell = { ...cell, opacity: 0.6, fontWeight: 600, textAlign: 'left' };
+      const numCell = { ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+
+      const renderTable = (tbl) => {
+        const isOpen = openTable === tbl.id;
+        const rows = tbl.rows;
+        return h('div', { key: tbl.id, style: { marginBottom: '8px' } }, [
+          h('button', {
+            key: 'h',
+            type: 'button',
+            onClick: () => setOpenTable(isOpen ? null : tbl.id),
+            style: {
+              width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px',
+              color: 'inherit', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600
+            }
+          }, [
+            h('span', { key: 'a', style: { opacity: 0.6, fontSize: '10px' } }, isOpen ? '▼' : '▶'),
+            h('span', { key: 't' }, tbl.title),
+            h('span', { key: 'c', style: { opacity: 0.5, fontWeight: 400, marginLeft: 'auto' } }, `${rows.length} 项`)
+          ]),
+          isOpen && rows.length > 0 && h('table', {
+            key: 't',
+            style: { width: '100%', borderCollapse: 'collapse', marginTop: '4px' }
+          }, [
+            h('thead', { key: 'thead' }, h('tr', null, [
+              h('th', { key: 'n', style: headCell }, tbl.id === 'day' ? '日期' : tbl.id === 'model' ? '模型' : '渠道'),
+              h('th', { key: 'r', style: { ...headCell, textAlign: 'right' } }, '请求'),
+              h('th', { key: 'k', style: { ...headCell, textAlign: 'right' } }, 'Token'),
+              h('th', { key: 'c', style: { ...headCell, textAlign: 'right' } }, '积分'),
+              h('th', { key: 'e', style: { ...headCell, textAlign: 'right' } }, '换算≈token')
+            ])),
+            h('tbody', { key: 'tbody' }, rows.map((r, i) => {
+              const est = estimateTokens(r.credits, totals.credits, totals.tokens);
+              return h('tr', { key: i }, [
+                h('td', { key: 'n', style: cell }, tbl.labelOf(r)),
+                h('td', { key: 'r', style: numCell }, String(r.requests)),
+                h('td', { key: 'k', style: numCell }, compactNumber(r.tokens)),
+                h('td', { key: 'c', style: numCell }, r.creditsKnown > 0 ? compactNumber(r.credits) : '—'),
+                h('td', { key: 'e', style: numCell }, est === null ? '—' : compactNumber(est) + '*')
+              ]);
+            }))
+          ]),
+          isOpen && rows.length === 0 && h('p', {
+            key: 'empty',
+            style: { margin: '6px 10px', fontSize: '12px', opacity: 0.5 }
+          }, '该时间范围内暂无数据')
+        ]);
+      };
+
+      const perCredit = totals.credits > 0 ? totals.tokens / totals.credits : null;
+
+      return h('div', { style: { padding: '4px 2px' } }, [
+        h('h2', { key: 'title', style: { margin: '0 0 4px', fontSize: '15px' } }, '用量统计'),
+        h('p', { key: 'sub', style: { margin: '0 0 12px', fontSize: '12px', opacity: 0.55 } },
+          `统计起始：${formatSinceDate(since)}（积分消耗自本功能安装后开始记录）`),
+
+        h('div', { key: 'range', style: { display: 'flex', gap: '6px', marginBottom: '12px' } },
+          USAGE_RANGES.map(r => h('button', {
+            key: r.id,
+            type: 'button',
+            onClick: () => setRange(r.id),
+            style: {
+              padding: '4px 10px', borderRadius: '999px', fontSize: '12px', cursor: 'pointer',
+              border: '1px solid ' + (range === r.id ? 'rgba(56,189,248,0.6)' : 'rgba(255,255,255,0.1)'),
+              background: range === r.id ? 'rgba(56,189,248,0.15)' : 'transparent',
+              color: range === r.id ? '#7dd3fc' : 'inherit'
+            }
+          }, r.label))
+        ),
+
+        h('div', { key: 'summary', style: {
+          display: 'flex', gap: '18px', flexWrap: 'wrap',
+          padding: '10px 12px', marginBottom: '12px',
+          background: 'rgba(255,255,255,0.04)',
+          border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px'
+        } }, [
+          h('div', { key: 'q' }, [h('div', { style: { fontSize: '11px', opacity: 0.55 } }, '请求'), h('div', { style: { fontSize: '16px', fontWeight: 700 } }, String(totals.requests))]),
+          h('div', { key: 't' }, [h('div', { style: { fontSize: '11px', opacity: 0.55 } }, 'Token'), h('div', { style: { fontSize: '16px', fontWeight: 700 } }, compactNumber(totals.tokens))]),
+          h('div', { key: 'c' }, [h('div', { style: { fontSize: '11px', opacity: 0.55 } }, '积分'), h('div', { style: { fontSize: '16px', fontWeight: 700 } }, totals.credits > 0 ? compactNumber(totals.credits) : '—')]),
+          h('div', { key: 'e' }, [h('div', { style: { fontSize: '11px', opacity: 0.55 } }, '换算≈token'), h('div', { style: { fontSize: '16px', fontWeight: 700 } }, perCredit === null ? '—' : compactNumber(totals.credits * perCredit))])
+        ]),
+
+        error !== '' && h('p', { key: 'err', style: { fontSize: '12px', color: '#f87171' } }, `读取失败：${error}`),
+
+        events === null && h('p', { key: 'loading', style: { fontSize: '12px', opacity: 0.5 } }, '加载中…'),
+        events !== null && events.length === 0 && h('p', { key: 'nodata', style: { fontSize: '12.5px', opacity: 0.6 } },
+          `自 ${formatSinceDate(since)} 起统计，暂无数据。发起一次对话后这里会出现记录。`),
+
+        events !== null && events.length > 0 && h('div', { key: 'tables' }, tables.map(renderTable)),
+
+        h('p', { key: 'note', style: { marginTop: '10px', fontSize: '11px', opacity: 0.45, lineHeight: 1.6 } }, [
+          '* 换算≈token 按当前范围内实测均值反推（',
+          perCredit === null ? '样本不足' : `1 积分 ≈ ${perCredit.toFixed(1)} token`,
+          '），并非官方汇率。不同渠道计费规则不同，仅供粗略参考。'
+        ])
+      ]);
+    }
+
+    // 统计页独立错误边界：异常不影响设置页其他分区
+    class UsageStatsErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false };
+      }
+      static getDerivedStateFromError() {
+        return { hasError: true };
+      }
+      componentDidCatch(err) {
+        console.warn('[SmartModels] UsageStatsPage 已捕获异常:', err);
+      }
+      render() {
+        if (this.state.hasError) {
+          return h('p', { style: { fontSize: '12px', opacity: 0.6 } }, '用量统计加载失败');
+        }
+        return this.props.children;
+      }
+    }
+
+    function SafeUsageStatsPage(props) {
+      return h(UsageStatsErrorBoundary, null, h(UsageStatsPage, props));
+    }
+
     // ── 插件装配入口 ────────────────────────────────────────────────────────────
     const inject = ['slots', 'sessions', 'remote', 'remote.session'];
 
@@ -2585,6 +2872,16 @@ window.__ModuleLoader__.load({
             ctx
           })
         }, SafeCreditsHud);
+      });
+
+      // 设置页「用量统计」分区：排在「免费模型」(order 35) 之后
+      ctx.slots.inject('settings.section', () => {
+        return ctx.slots.register({
+          name: 'settings.section',
+          id: 'smart-models-usage',
+          order: 36,
+          label: () => '用量统计'
+        }, SafeUsageStatsPage);
       });
     }
 

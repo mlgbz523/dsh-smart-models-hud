@@ -133,6 +133,109 @@ export function apply(ctx) {
             return;
           }
 
+          if (req.url.startsWith('/api/smart-models/usage')) {
+            // 用量台账：插件自己观测到的每轮积分消耗 + token，用于设置页统计。
+            // 现有 token-ledger.json 只有 token 没有积分，历史积分无法回溯，
+            // 因此这份台账从本功能安装后开始累积。
+            const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+            const usagePath = path.join(dshHome, 'smart-models-usage.json');
+            const RETENTION_DAYS = 90;
+            const EMPTY = () => ({ schema: 'dsh-smart-models/usage/v1', since: Date.now(), events: [] });
+
+            const readLedger = () => {
+              try {
+                if (!fs.existsSync(usagePath)) return EMPTY();
+                const parsed = JSON.parse(fs.readFileSync(usagePath, 'utf8'));
+                if (!parsed || !Array.isArray(parsed.events)) return EMPTY();
+                return {
+                  schema: parsed.schema || 'dsh-smart-models/usage/v1',
+                  since: Number.isFinite(parsed.since) ? parsed.since : Date.now(),
+                  events: parsed.events
+                };
+              } catch (e) {
+                // 文件损坏时重建，不阻塞功能
+                return EMPTY();
+              }
+            };
+
+            const writeLedger = (ledger) => {
+              // 原子写：先写临时文件再 rename，避免半截文件
+              const tmp = usagePath + '.tmp';
+              fs.writeFileSync(tmp, JSON.stringify(ledger), 'utf8');
+              fs.renameSync(tmp, usagePath);
+            };
+
+            if (req.method === 'GET') {
+              try {
+                const ledger = readLedger();
+                const sinceMs = Number(new URL(req.url, 'http://x').searchParams.get('since')) || 0;
+                const events = sinceMs > 0 ? ledger.events.filter(e => e && e.at >= sinceMs) : ledger.events;
+                const payload = JSON.stringify({
+                  ok: true,
+                  schema: ledger.schema,
+                  since: ledger.since,
+                  events,
+                  updatedAt: Date.now()
+                });
+                res.writeHead(200, {
+                  'Content-Type': 'application/json; charset=utf-8',
+                  'Content-Length': Buffer.byteLength(payload),
+                  'Cache-Control': 'no-store'
+                });
+                res.end(payload);
+              } catch (err) {
+                const errPayload = JSON.stringify({ ok: false, error: String(err?.message || err) });
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(errPayload);
+              }
+              return;
+            }
+
+            if (req.method === 'POST') {
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', () => {
+                try {
+                  const incoming = JSON.parse(body || '{}');
+                  const ledger = readLedger();
+                  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+                  const rows = Array.isArray(incoming) ? incoming : [incoming];
+                  for (const row of rows) {
+                    if (!row || typeof row !== 'object') continue;
+                    const at = Number.isFinite(row.at) ? row.at : Date.now();
+                    if (at < cutoff) continue;
+                    ledger.events.push({
+                      at,
+                      provider: String(row.provider || ''),
+                      model: String(row.model || ''),
+                      credits: Number.isFinite(row.credits) ? row.credits : 0,
+                      creditsKnown: row.creditsKnown === true,
+                      inputTokens: Number.isFinite(row.inputTokens) ? row.inputTokens : 0,
+                      outputTokens: Number.isFinite(row.outputTokens) ? row.outputTokens : 0,
+                      requests: Number.isFinite(row.requests) ? row.requests : 1
+                    });
+                  }
+
+                  // 90 天滚动裁剪
+                  ledger.events = ledger.events.filter(e => e && e.at >= cutoff);
+                  writeLedger(ledger);
+
+                  const okPayload = JSON.stringify({ ok: true, count: ledger.events.length });
+                  res.writeHead(200, {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Content-Length': Buffer.byteLength(okPayload)
+                  });
+                  res.end(okPayload);
+                } catch (err) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+                }
+              });
+              return;
+            }
+          }
+
           if (req.url.startsWith('/api/smart-models/channel-status')) {
             try {
               const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
