@@ -770,6 +770,20 @@ window.__ModuleLoader__.load({
       .dsh-sm-family-head:hover {
         background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.06));
       }
+      /* 展开中的家族标题吸顶：滚动浏览长家族时始终可见，方便随时点回关闭 */
+      .dsh-sm-family-head.is-sticky {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #18181b) 96%, transparent);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-radius: 0;
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      .dsh-sm-family-head.is-sticky:hover {
+        background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #18181b) 88%, transparent);
+      }
       .dsh-sm-family-arrow {
         font-size: 10px;
         opacity: 0.45;
@@ -811,8 +825,8 @@ window.__ModuleLoader__.load({
 
     function injectStyles() {
       if (typeof document === 'undefined') return;
-      const STYLE_TAG_ID = 'dsh-smart-models-styles-v18';
-      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17'];
+      const STYLE_TAG_ID = 'dsh-smart-models-styles-v19';
+      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17', 'dsh-smart-models-styles-v18'];
       for (const oid of oldIds) {
         const el = document.getElementById(oid);
         if (el) el.remove();
@@ -1745,14 +1759,11 @@ window.__ModuleLoader__.load({
       }, [filteredList, query, favoritedModels, activeInfo?.canonName]);
 
       // 家族展开状态：默认全部折叠
-      const [expandedFamilies, setExpandedFamilies] = useState(() => new Set());
+      // 家族展开状态：手风琴互斥单开
+      // 同一时刻最多只有一个家族展开；点另一个自动关闭上一个；再点自己则全部关闭。
+      const [expandedFamily, setExpandedFamily] = useState(null);
       const toggleFamily = useCallback((famId) => {
-        setExpandedFamilies(prev => {
-          const next = new Set(prev);
-          if (next.has(famId)) next.delete(famId);
-          else next.add(famId);
-          return next;
-        });
+        setExpandedFamily(prev => (prev === famId ? null : famId));
       }, []);
 
       // 当前伴随卡片对应的模型对象
@@ -2025,11 +2036,11 @@ window.__ModuleLoader__.load({
                         }, groupedModels.pinned.map(p => renderModelRow(p.item))),
                         ...groupedModels.families.map(group => {
                           const famId = group.fam.id;
-                          const isOpen = expandedFamilies.has(famId);
+                          const isOpen = expandedFamily === famId;
                           return h('div', { key: 'fam-' + famId, className: 'dsh-sm-family' }, [
                             h('div', {
                               key: 'head',
-                              className: `dsh-sm-family-head ${isOpen ? 'is-open' : ''}`,
+                              className: `dsh-sm-family-head ${isOpen ? 'is-open is-sticky' : ''}`,
                               title: `${group.fam.label}：${group.items.length} 个模型（点击${isOpen ? '折叠' : '展开'}）`,
                               onClick: () => toggleFamily(famId)
                             }, [
