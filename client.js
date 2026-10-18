@@ -644,15 +644,25 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-tertiary, #94a3b8);
         white-space: nowrap;
       }
+      /* 四个档位按钮始终单行：不换行 + 等宽平分整行宽度 */
       .dsh-sm-effort-pills {
         display: flex;
         gap: 4px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        width: 100%;
+        min-width: 0;
       }
       .dsh-sm-effort-pill {
-        padding: 2px 7px;
+        flex: 1 1 0;
+        min-width: 0;
+        padding: 2px 4px;
         border-radius: 4px;
         font-size: 11px;
+        line-height: 16px;
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         border: 1px solid var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.1));
         background: transparent;
         color: inherit;
@@ -825,8 +835,8 @@ window.__ModuleLoader__.load({
 
     function injectStyles() {
       if (typeof document === 'undefined') return;
-      const STYLE_TAG_ID = 'dsh-smart-models-styles-v19';
-      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17', 'dsh-smart-models-styles-v18'];
+      const STYLE_TAG_ID = 'dsh-smart-models-styles-v20';
+      const oldIds = ['dsh-smart-models-styles-v2', 'dsh-smart-models-styles-v3', 'dsh-smart-models-styles-v4', 'dsh-smart-models-styles-v5', 'dsh-smart-models-styles-v6', 'dsh-smart-models-styles-v7', 'dsh-smart-models-styles-v8', 'dsh-smart-models-styles-v9', 'dsh-smart-models-styles-v10', 'dsh-smart-models-styles-v11', 'dsh-smart-models-styles-v12', 'dsh-smart-models-styles-v13', 'dsh-smart-models-styles-v14', 'dsh-smart-models-styles-v15', 'dsh-smart-models-styles-v16', 'dsh-smart-models-styles-v17', 'dsh-smart-models-styles-v18', 'dsh-smart-models-styles-v19'];
       for (const oid of oldIds) {
         const el = document.getElementById(oid);
         if (el) el.remove();
@@ -2110,8 +2120,8 @@ window.__ModuleLoader__.load({
           ]),
 
           // 底部思考档位栏（当当前激活模型支持思考时）
+          // 面板仅 270px 宽，故不设文字标签，让四个档位按钮独占一行
           activeReasoning?.efforts && activeReasoning.efforts.length > 0 && h('div', { key: 'effort-row', className: 'dsh-sm-effort-row' }, [
-            h('span', { className: 'dsh-sm-effort-label' }, '思考档位:'),
             h('div', { className: 'dsh-sm-effort-pills' },
               activeReasoning.efforts.map(eff => {
                 const isEffActive = (activeInfo?.effort ?? activeReasoning.defaultEffort) === eff.id;
@@ -2119,6 +2129,7 @@ window.__ModuleLoader__.load({
                   key: eff.id,
                   type: 'button',
                   className: `dsh-sm-effort-pill ${isEffActive ? 'active' : ''}`,
+                  title: `思考档位: ${eff.name || eff.id}`,
                   onClick: () => handleSelect(activeInfo.providerId, activeInfo.modelId, eff.id)
                 }, eff.name || eff.id);
               })
