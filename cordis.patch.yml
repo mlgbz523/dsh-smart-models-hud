@@ -1,0 +1,9 @@
+# dsh-smart-models bundle patch
+- id: ui-model-selection
+  disabled: true
+
+- insert:
+    - id: smart-models
+      name: 'dsh-smart-models'
+      config:
+        enabled: true
