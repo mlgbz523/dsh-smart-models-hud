@@ -45,16 +45,27 @@ window.__ModuleLoader__.load({
 
     // ── CSS 样式注入 ────────────────────────────────────────────────────────────
     const CSS_TEXT = `
+      /* 根源治本：禁止 DSH 输入底栏换行断层，强制单行水平排列 */
+      div[class*="_row"] {
+        flex-wrap: nowrap !important;
+      }
+      div[class*="_trailing"] {
+        min-width: 0 !important;
+        flex-shrink: 1 !important;
+      }
+
       .dsh-sm-root {
         position: relative;
         display: inline-flex;
         align-items: center;
+        min-width: 0;
+        flex-shrink: 1;
       }
 
-      /* 触发器按钮 */
+      /* 触发器按钮：弹性自适应防撑爆 */
       .dsh-sm-trigger {
         min-width: 0;
-        max-width: min(420px, 50cqw);
+        max-width: min(340px, 45cqw);
         height: 28px;
         border-radius: var(--dsw-radius-sm, 6px);
         color: var(--dsw-alias-label-secondary, #94a3b8);
@@ -64,14 +75,14 @@ window.__ModuleLoader__.load({
         cursor: pointer;
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        padding: 0 8px;
+        gap: 4px;
+        padding: 0 6px;
         font-size: 13px;
         font-weight: 500;
         line-height: 20px;
         user-select: none;
         white-space: nowrap;
-        flex-shrink: 0;
+        flex-shrink: 1;
         transition: background 0.15s, color 0.15s, border-color 0.15s;
       }
       .dsh-sm-trigger:hover:not(:disabled) {
@@ -91,7 +102,9 @@ window.__ModuleLoader__.load({
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        max-width: 170px;
+        flex: 0 1 auto;
+        min-width: 40px;
+        max-width: 125px;
       }
       .dsh-sm-trigger-provider {
         opacity: 0.75;
@@ -120,6 +133,21 @@ window.__ModuleLoader__.load({
         font-size: 11px;
         white-space: nowrap;
         flex-shrink: 0;
+      }
+      /* 紧凑精致型待生效徽章：仅占极小宽度，防止撑破底栏 */
+      .dsh-sm-trigger-pending {
+        margin-left: 2px;
+        padding: 0 3px;
+        border-radius: 3px;
+        font-size: 9.5px;
+        line-height: 13px;
+        font-weight: 600;
+        color: #fbbf24;
+        background: rgba(245, 158, 11, 0.18);
+        border: 1px solid rgba(245, 158, 11, 0.4);
+        white-space: nowrap;
+        flex-shrink: 0;
+        cursor: help;
       }
       .dsh-sm-chevron {
         flex-shrink: 0;
@@ -864,6 +892,7 @@ window.__ModuleLoader__.load({
     function formatCompactRate(multiplier) {
       if (!multiplier) return '1x';
       const s = String(multiplier).replace(/^x/i, '').replace(/x$/i, '').trim();
+      // 极致紧凑展示（如 0x / 1x / 0.7x），为底栏节省横向空间，杜绝换行断层
       if (s === '0.00' || s === '0' || s === '免费') return '0x';
       if (s === '1.00' || s === '1') return '1x';
       if (s.endsWith('.00')) return `${parseFloat(s)}x`;
@@ -1336,6 +1365,11 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('');
       const [catalog, setCatalog] = useState(null);
       const [currentSelection, setCurrentSelection] = useState(null);
+      // 方案3：最近一次请求实际消费的渠道（projection.lastUsed），与 pending 分离记录
+      const [lastUsedSelection, setLastUsedSelection] = useState(null);
+      // 方案3修正：后端投影里的"待生效选择"（projection.next 且 pending 非空）。
+      // 与 currentSelection 分开：后者会被乐观更新污染，不能用来判断是否已生效。
+      const [confirmedNextSelection, setConfirmedNextSelection] = useState(null);
       const [modelChannelDefaults, setModelChannelDefaults] = useState(() => loadModelChannelDefaults());
       const [favoritedModels, setFavoritedModels] = useState(() => new Set(loadFavoritedModels()));
       const [hoveredModel, setHoveredModel] = useState(null);
@@ -1442,22 +1476,43 @@ window.__ModuleLoader__.load({
         };
       }, [effectiveCtx, refreshCatalog]);
 
-      // 安全调用底层 RPC 选择模型
+      // 调用底层 RPC 选择模型（方案1：失败必须抛出，不能静默吞掉）
       const invokeSelectModel = useCallback(async (payload) => {
-        try {
-          if (typeof remoteSession?.selectModel === 'function') {
-            return await remoteSession.selectModel(payload);
+        const candidates = [
+          ['remoteSession', remoteSession?.selectModel],
+          ['sessions', sessions?.selectModel],
+          ['ctx.remote.session', effectiveCtx?.remote?.session?.selectModel],
+        ];
+        // 诊断：把三个候选接口的真实可用性打到控制台，便于定位"切换无效"
+        console.log('[SmartModels][diag] selectModel 候选:', candidates.map(([n, fn]) => `${n}=${typeof fn}`).join(' | '));
+
+        let lastError = null;
+        for (const [name, fn] of candidates) {
+          if (typeof fn !== 'function') continue;
+          // 保留原对象作为 receiver：RPC 方法依赖 this 绑定，脱离对象调用会失效
+          const receiver = name === 'remoteSession' ? remoteSession
+            : name === 'sessions' ? sessions
+            : effectiveCtx.remote.session;
+          try {
+            const result = await fn.call(receiver, payload);
+            // DSH 的 RemoteResult 契约：一元调用**从不 reject**，而是返回
+            //   { ok: true, value } 或 { ok: false, error }。
+            // 因此"成功"必须以 result.ok 为准，不能只看有没有抛异常。
+            if (result !== null && typeof result === 'object' && result.ok === false) {
+              const err = result.error;
+              const msg = err?.message || err?.code || '远端拒绝该模型选择';
+              console.error(`[SmartModels] selectModel 被拒绝 via ${name}:`, err);
+              throw err instanceof Error ? err : new Error(String(msg));
+            }
+            console.log('[SmartModels] selectModel 成功 via', name, result);
+            return result;
+          } catch (e) {
+            lastError = e;
+            console.error(`[SmartModels] selectModel 失败 via ${name}:`, e);
           }
-          if (typeof sessions?.selectModel === 'function') {
-            return await sessions.selectModel(payload);
-          }
-          if (typeof effectiveCtx?.remote?.session?.selectModel === 'function') {
-            return await effectiveCtx.remote.session.selectModel(payload);
-          }
-          console.warn('[SmartModels] 未能找到有效的 selectModel RPC 接口');
-        } catch (e) {
-          console.error('[SmartModels] selectModel RPC 执行异常:', e);
         }
+        if (lastError !== null) throw lastError;
+        throw new Error('未找到可用的 selectModel RPC 接口（remoteSession / sessions / ctx.remote.session 均不可调用）');
       }, [remoteSession, sessions, effectiveCtx]);
 
       // 3. 观察当前会话选择（每个窗口独立隔离，完全由会话自身状态决定）
@@ -1482,8 +1537,23 @@ window.__ModuleLoader__.load({
         const updateCurrent = () => {
           try {
             const snapshot = projection.getSnapshot?.();
-            const sel = snapshot?.next || snapshot?.current || null;
-            setCurrentSelection(sel);
+            // projection view 暴露两个字段（DSH 定义）：
+            //   next     = pending ?? lastUsed —— 下一次请求将要使用的选择
+            //   lastUsed = 最近一次已记录请求实际消费的选择
+            // pending 与 lastUsed 相同时 DSH 会自动清空 pending，故 next === lastUsed 即"已同步"。
+            const nextSel = snapshot?.next || snapshot?.current || null;
+            const usedSel = snapshot?.lastUsed || null;
+            setCurrentSelection(nextSel);
+            setLastUsedSelection(usedSel);
+            // 后端是否真的还有一个"待生效"选择：
+            // DSH 在 pending 被请求消费后会自动置空，此时 next 回落到 lastUsed。
+            // 因此 pending 存在 ⟺ next 与 lastUsed 不同（由 DSH 的 sameSelection 语义保证）。
+            const hasPending = nextSel !== null && usedSel !== null && (
+              nextSel.provider !== usedSel.provider ||
+              nextSel.model !== usedSel.model ||
+              (nextSel.reasoningEffort || '') !== (usedSel.reasoningEffort || '')
+            );
+            setConfirmedNextSelection(hasPending ? nextSel : null);
           } catch (err) {
             console.warn('[SmartModels] updateCurrent 异常已静默兜底:', err);
           }
@@ -1504,7 +1574,8 @@ window.__ModuleLoader__.load({
         medium: '中',
         low: '低',
         max: '极高',
-        off: '关闭'
+        on: '开',
+        off: '关'
       };
       return map[String(effort).toLowerCase()] || effort;
     }
@@ -1614,22 +1685,79 @@ window.__ModuleLoader__.load({
         };
       }, [currentSelection, catalog]);
 
-      // 6. 切换模型操作（加锁防重置 + 乐观更新）
+      // 5.1 方案3：切换生效状态
+      // 判定依据必须是**后端投影**（confirmedNextSelection），而不是乐观更新的 currentSelection：
+      // 乐观值会在 RPC 尚未确认时提前反映选择，用它比对会产生假"未生效"。
+      const switchState = useMemo(() => {
+        if (!lastUsedSelection) return { kind: 'idle' };
+        // 后端没有 pending → 已同步（最后一次请求用的就是当前选择）
+        if (!confirmedNextSelection) return { kind: 'synced' };
+        return {
+          kind: 'pending',
+          fromProvider: lastUsedSelection.provider,
+          fromModel: lastUsedSelection.model,
+          toProvider: confirmedNextSelection.provider,
+          toModel: confirmedNextSelection.model
+        };
+      }, [confirmedNextSelection, lastUsedSelection]);
+
+      // 5.2 按渠道真实能力规范化思考档位
+      // 每个渠道支持的档位不同（例如 CodeArts 只有 on/off，CodeBuddy 有 low/high/max），
+      // 把不支持的值原样发过去会被 DSH 以 UNSUPPORTED_REASONING_EFFORT 拒绝，
+      // 表现为"切换无效"。这里从 catalog 的 reasoning.efforts 读取真实档位并降级映射。
+      const normalizeEffort = useCallback((providerId, modelId, effort) => {
+        if (effort === undefined || effort === null || effort === '') return undefined;
+        let meta = null;
+        try {
+          const grp = catalog?.groups?.find(g => g.id === providerId);
+          const mdl = grp?.models?.find(m => m.id === modelId);
+          meta = mdl?.reasoning || null;
+        } catch (e) { meta = null; }
+        // 该模型没有声明 reasoning 能力：不发送档位
+        if (!meta) return undefined;
+        const list = Array.isArray(meta.efforts) ? meta.efforts.map(x => (typeof x === 'string' ? x : x?.id)).filter(Boolean) : [];
+        if (list.length === 0) return undefined;
+        if (list.includes(effort)) return effort;
+        // 降级优先级：同语义 > 就近 > 默认 > 首项
+        const alias = { on: ['on', 'high', 'medium', 'low'], off: ['off', 'disabled', 'low'], disabled: ['disabled', 'off', 'low'],
+                        high: ['high', 'max', 'medium', 'low', 'on'], max: ['max', 'high', 'xhigh', 'medium', 'low'],
+                        xhigh: ['xhigh', 'max', 'high', 'medium', 'low'], medium: ['medium', 'high', 'low'], low: ['low', 'medium', 'high'] };
+        for (const cand of (alias[effort] || [])) {
+          if (list.includes(cand)) return cand;
+        }
+        if (meta.defaultEffort && list.includes(meta.defaultEffort)) return meta.defaultEffort;
+        return list[0];
+      }, [catalog]);
+
+      // 6. 切换模型操作（方案1：乐观更新 + 失败回滚，杜绝"UI 显示已切、实际没切"）
       const handleSelect = useCallback(async (providerId, modelId, effort) => {
         if (!sessionId) return;
+        const previous = currentSelection;
         try {
+          // 先按目标渠道能力规范化档位，避免把不支持的值发上去被拒
+          const safeEffort = normalizeEffort(providerId, modelId, effort);
           const payload = {
             sessionId,
             provider: providerId,
             model: modelId,
-            ...(effort !== undefined ? { reasoningEffort: effort } : {})
+            ...(safeEffort !== undefined ? { reasoningEffort: safeEffort } : {})
           };
-          setCurrentSelection({ provider: providerId, model: modelId, reasoningEffort: effort });
+          // 乐观更新：先让 UI 立刻响应（用规范化后的档位，保证 UI 显示的值真实存在）
+          setCurrentSelection({ provider: providerId, model: modelId, reasoningEffort: safeEffort });
           await invokeSelectModel(payload);
         } catch (e) {
-          console.error('[SmartModels] 切换模型失败:', e);
+          // RPC 真的失败了：回滚到切换前的真实状态，并明确报错
+          console.error('[SmartModels] 切换模型失败，已回滚 UI:', e);
+          setCurrentSelection(previous);
+          try {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+              window.alert('切换模型失败：' + msg + '\n\nUI 已回滚到切换前的渠道。');
+            }
+          } catch (ignored) { /* 提示失败不影响回滚 */ }
         }
-      }, [sessionId, invokeSelectModel]);
+        // normalizeEffort 依赖 catalog，必须列入依赖，否则闭包会捕获过期的 catalog
+      }, [sessionId, invokeSelectModel, currentSelection, normalizeEffort]);
 
       // 7. 渠道级星标：收藏该模型的首选渠道（纯收藏记忆，不执行即时切换，不影响其他会话）
       const handleSetDefault = useCallback((item, p) => {
@@ -1995,7 +2123,7 @@ window.__ModuleLoader__.load({
         className: `dsh-sm-trigger ${open ? 'open' : ''}`,
         onClick: () => setOpen(!open),
         title: activeInfo
-          ? `模型：${activeInfo.canonName}\n渠道：${activeInfo.providerName}\n计费倍率：${activeInfo.multiplier}${activeInfo.effort ? `\n思考档位：${formatEffortLabel(activeInfo.effort)} (${activeInfo.effort})` : ''}\n点击打开选择面板`
+          ? `模型：${activeInfo.canonName}\n渠道：${activeInfo.providerName}\n计费倍率：${activeInfo.multiplier}${activeInfo.effort ? `\n思考档位：${formatEffortLabel(activeInfo.effort)} (${activeInfo.effort})` : ''}${switchState.kind === 'pending' ? `\n\n⚠ 切换尚未生效\n已选择：${switchState.toProvider} / ${switchState.toModel}\n最近请求：${switchState.fromProvider} / ${switchState.fromModel}\n下一次发送消息后生效` : ''}\n点击打开选择面板`
           : '智能模型聚合与切换（点击打开面板）'
       }, [
         // Sparkle 图标
@@ -2028,6 +2156,11 @@ window.__ModuleLoader__.load({
         activeInfo?.effort && h('span', { className: 'dsh-sm-trigger-effort' },
           `· ${formatEffortLabel(activeInfo.effort)}`
         ),
+        // 方案3：已切换但尚未被下一次请求消费时，显式提示
+        switchState.kind === 'pending' && h('span', {
+          className: 'dsh-sm-trigger-pending',
+          title: `已选择 ${switchState.toProvider} / ${switchState.toModel}，但最近一次请求仍使用 ${switchState.fromProvider} / ${switchState.fromModel}。发送下一条消息后生效。`
+        }, '待生效'),
         // 箭头
         h('svg', {
           className: `dsh-sm-chevron ${open ? 'open' : ''}`,
