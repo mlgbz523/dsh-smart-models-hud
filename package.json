@@ -1,6 +1,6 @@
 {
   "name": "dsh-smart-models",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 独立智能模型聚合与置顶选择器：以模型名为主标题聚合多供应商，单行徽章就地切换渠道，支持常用模型星标置顶与最近使用历史。",
   "keywords": [
     "dsh",
@@ -24,7 +24,7 @@
     "package.json",
     "icon.svg",
     "README.md",
-    "dashboard",
+    "dashboard/index.html",
     "src"
   ],
   "dsh": {
