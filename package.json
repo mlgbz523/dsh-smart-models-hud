@@ -23,7 +23,9 @@
     "cordis.patch.yml",
     "package.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "dashboard",
+    "src"
   ],
   "dsh": {
     "bundle": {
@@ -48,5 +50,8 @@
   "homepage": "https://github.com/mlgbz523/dsh-smart-models-hud#readme",
   "bugs": {
     "url": "https://github.com/mlgbz523/dsh-smart-models-hud/issues"
+  },
+  "scripts": {
+    "prepack": "node scripts/verify-files.mjs"
   }
 }
